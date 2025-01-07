@@ -58,32 +58,43 @@ def extract_review_questions(pdf_reader) -> list:
                 })
     return questions
 
-def evaluate_answer(question: str, user_answer: str) -> dict:
+def evaluate_answer(question: str, user_answer: str, eli5: bool = False) -> dict:
     """Evaluate user's answer using OpenAI."""
     try:
+        eli5_instruction = """
+        Falls 'explain_simple' aktiviert ist, formuliere die Erklärung sehr einfach, 
+        als würdest du mit einem Kind sprechen. Benutze einfache Worte und kurze Sätze.
+        """ if eli5 else ""
+
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a helpful teaching assistant evaluating student answers. Always respond with valid JSON."
+                    "content": f"""Du bist ein hilfreicher Lehrassistent, der Studentenantworten bewertet. 
+                    Antworte immer mit gültigem JSON und formuliere alle Erklärungen auf Deutsch.
+                    Bei falschen Antworten gib eine einprägsame Eselsbrücke, die beim Merken der richtigen Antwort hilft.
+                    {eli5_instruction}"""
                 },
                 {
                     "role": "user",
                     "content": f"""
-                    Question: {question}
-                    Student's Answer: {user_answer}
+                    Frage: {question}
+                    Antwort des Studenten: {user_answer}
+                    Einfache Erklärung gewünscht: {str(eli5)}
                     
-                    Evaluate the answer and provide:
-                    1. Whether it's correct (yes/no)
-                    2. A detailed explanation
-                    3. The correct answer if the student's answer was incorrect
+                    Bewerte die Antwort und gib folgendes an:
+                    1. Ob sie korrekt ist (ja/nein)
+                    2. Eine detaillierte Erklärung
+                    3. Die richtige Antwort falls die Antwort falsch war
+                    4. Eine Eselsbrücke falls die Antwort falsch war
                     
-                    Return as JSON:
+                    Antworte als JSON:
                     {{
                         "is_correct": true/false,
-                        "explanation": "Your explanation here",
-                        "correct_answer": "The correct answer if needed"
+                        "explanation": "Deine Erklärung hier",
+                        "correct_answer": "Die richtige Antwort falls nötig",
+                        "eselsbruecke": "Eine hilfreiche Eselsbrücke falls die Antwort falsch war"
                     }}
                     """
                 }
@@ -91,11 +102,15 @@ def evaluate_answer(question: str, user_answer: str) -> dict:
             temperature=0.3
         )
         
-        # Use json.loads instead of eval
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        st.error(f"Error evaluating answer: {str(e)}")
-        return {"is_correct": False, "explanation": "Error evaluating answer", "correct_answer": ""}
+        st.error(f"Fehler bei der Auswertung: {str(e)}")
+        return {
+            "is_correct": False, 
+            "explanation": "Fehler bei der Auswertung", 
+            "correct_answer": "",
+            "eselsbruecke": ""
+        }
 
 def display_questions(questions: list):
     """Display questions one by one with answer evaluation."""
@@ -106,32 +121,42 @@ def display_questions(questions: list):
         st.session_state.show_evaluation = False
 
     # Display question counter
-    st.write(f"Question {st.session_state.question_index + 1} of {len(questions)}")
+    st.write(f"Frage {st.session_state.question_index + 1} von {len(questions)}")
     
     # Show the question
     current_question = questions[st.session_state.question_index]['text']
     st.markdown(f"### {current_question}")
     
-    # Answer input
-    user_answer = st.text_area("Your Answer:", key=f"answer_{st.session_state.question_index}")
+    # Answer input and controls
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        user_answer = st.text_area("Deine Antwort:", key=f"answer_{st.session_state.question_index}")
+    with col2:
+        eli5_mode = st.toggle("Erkläre es einfach 🧸", help="Aktiviere für eine besonders einfache Erklärung")
     
     # Check answer button
-    if st.button("Check Answer"):
+    if st.button("Antwort prüfen"):
         if user_answer.strip():
-            evaluation = evaluate_answer(current_question, user_answer)
+            evaluation = evaluate_answer(current_question, user_answer, eli5_mode)
             
             # Show evaluation result
             if evaluation["is_correct"]:
-                st.success("✅ Correct!")
+                st.success("✅ Richtig!")
             else:
-                st.error("❌ Not quite right")
+                st.error("❌ Nicht ganz richtig")
             
             # Show explanation in expander
-            with st.expander("See Explanation", expanded=True):
+            with st.expander("Erklärung anzeigen", expanded=True):
+                if eli5_mode:
+                    st.markdown("### 🧸 Einfache Erklärung:")
                 st.write(evaluation["explanation"])
-                if not evaluation["is_correct"] and evaluation["correct_answer"]:
-                    st.write("**Correct Answer:**")
-                    st.write(evaluation["correct_answer"])
+                if not evaluation["is_correct"]:
+                    if evaluation["correct_answer"]:
+                        st.write("**Richtige Antwort:**")
+                        st.write(evaluation["correct_answer"])
+                    if evaluation.get("eselsbruecke"):
+                        st.write("**Eselsbrücke:**")
+                        st.info(evaluation["eselsbruecke"])
     
     # Navigation buttons in columns
     col1, col2 = st.columns(2)
@@ -146,14 +171,14 @@ def display_questions(questions: list):
 
     with col1:
         if st.session_state.question_index > 0:
-            st.button("⬅️ Previous", on_click=prev_question)
+            st.button("⬅️ Zurück", on_click=prev_question)
     with col2:
         if st.session_state.question_index < len(questions) - 1:
-            st.button("Next ➡️", on_click=next_question)
+            st.button("Weiter ➡️", on_click=next_question)
 
 def main():
-    st.title("Review Questions")
-    uploaded_file = st.file_uploader("Upload PDF", type=['pdf'])
+    st.title("Wiederholungsfragen")
+    uploaded_file = st.file_uploader("PDF hochladen", type=['pdf'])
     
     if uploaded_file:
         questions = process_pdf(uploaded_file.getvalue())
@@ -162,6 +187,6 @@ def main():
 
 if __name__ == "__main__":
     if not os.getenv('OPENAI_API_KEY'):
-        st.error('OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.')
+        st.error('OpenAI API-Schlüssel nicht gefunden. Bitte setze die OPENAI_API_KEY Umgebungsvariable.')
         st.stop()
     main() 
